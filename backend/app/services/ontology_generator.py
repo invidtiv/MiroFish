@@ -10,6 +10,7 @@ from typing import Dict, Any, List, Optional
 from ..utils.llm_client import LLMClient
 from ..utils.locale import get_language_instruction
 from ..utils.file_parser import split_text_into_chunks
+from ..utils.ontology import normalize_ontology_attribute
 
 logger = logging.getLogger(__name__)
 
@@ -432,10 +433,11 @@ class OntologyGenerator:
                 entity_name_map[original_name] = entity["name"]
             if "attributes" not in entity:
                 entity["attributes"] = []
-            # Normalize attributes: LLM may return strings instead of dicts
+            # Normalize LLM output and discard unusable attribute definitions.
             entity["attributes"] = [
-                attr if isinstance(attr, dict) else {"name": attr, "type": "text", "description": attr}
+                normalized
                 for attr in entity["attributes"]
+                if (normalized := normalize_ontology_attribute(attr)) is not None
             ]
             if "examples" not in entity:
                 entity["examples"] = []
@@ -461,10 +463,11 @@ class OntologyGenerator:
                 edge["source_targets"] = []
             if "attributes" not in edge:
                 edge["attributes"] = []
-            # Normalize attributes: LLM may return strings instead of dicts
+            # Normalize LLM output and discard unusable attribute definitions.
             edge["attributes"] = [
-                attr if isinstance(attr, dict) else {"name": attr, "type": "text", "description": attr}
+                normalized
                 for attr in edge["attributes"]
+                if (normalized := normalize_ontology_attribute(attr)) is not None
             ]
             if len(edge.get("description", "")) > 100:
                 edge["description"] = edge["description"][:97] + "..."

@@ -16,6 +16,7 @@ from zep_cloud import EpisodeData, EntityEdgeSourceTarget
 from ..config import Config
 from ..models.task import TaskManager, TaskStatus
 from ..utils.zep_paging import fetch_all_nodes, fetch_all_edges
+from ..utils.ontology import normalize_ontology_attribute
 from .text_processor import TextProcessor
 from ..utils.locale import t, get_locale, set_locale
 
@@ -233,13 +234,11 @@ class GraphBuilderService:
             annotations = {}
             
             for attr_def in entity_def.get("attributes", []):
-                # LLM may return attributes as strings instead of dicts
-                if isinstance(attr_def, str):
-                    attr_name = safe_attr_name(attr_def)
-                    attr_desc = attr_def
-                else:
-                    attr_name = safe_attr_name(attr_def["name"])  # 使用安全名称
-                    attr_desc = attr_def.get("description", attr_name)
+                normalized = normalize_ontology_attribute(attr_def)
+                if normalized is None:
+                    continue
+                attr_name = safe_attr_name(normalized["name"])  # 使用安全名称
+                attr_desc = normalized["description"]
                 # Zep API 需要 Field 的 description，这是必需的
                 attrs[attr_name] = Field(description=attr_desc, default=None)
                 annotations[attr_name] = Optional[EntityText]  # 类型注解
@@ -262,13 +261,11 @@ class GraphBuilderService:
             annotations = {}
             
             for attr_def in edge_def.get("attributes", []):
-                # LLM may return attributes as strings instead of dicts
-                if isinstance(attr_def, str):
-                    attr_name = safe_attr_name(attr_def)
-                    attr_desc = attr_def
-                else:
-                    attr_name = safe_attr_name(attr_def["name"])  # 使用安全名称
-                    attr_desc = attr_def.get("description", attr_name)
+                normalized = normalize_ontology_attribute(attr_def)
+                if normalized is None:
+                    continue
+                attr_name = safe_attr_name(normalized["name"])  # 使用安全名称
+                attr_desc = normalized["description"]
                 # Zep API 需要 Field 的 description，这是必需的
                 attrs[attr_name] = Field(description=attr_desc, default=None)
                 annotations[attr_name] = Optional[str]  # 边属性用str类型
@@ -513,4 +510,3 @@ class GraphBuilderService:
     def delete_graph(self, graph_id: str):
         """删除图谱"""
         self.client.graph.delete(graph_id=graph_id)
-
