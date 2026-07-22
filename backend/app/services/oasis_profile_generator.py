@@ -16,12 +16,16 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from openai import OpenAI
-from zep_cloud.client import Zep
-
 from ..config import Config
 from ..utils.logger import get_logger
 from ..utils.locale import get_language_instruction, get_locale, set_locale, t
 from ..utils.openai_chat_compat import create_chat_completion, extract_chat_completion_text
+from ..utils.zep import (
+    call_zep_read_with_retry,
+    get_zep_client,
+    is_retryable_zep_error,
+    normalize_zep_search_query,
+)
 from .zep_entity_reader import EntityNode, ZepEntityReader
 
 logger = get_logger('mirofish.oasis_profile')
@@ -263,7 +267,7 @@ class OasisProfileGenerator:
         
         if self.zep_api_key:
             try:
-                self.zep_client = Zep(api_key=self.zep_api_key)
+                self.zep_client = get_zep_client(self.zep_api_key)
             except Exception as e:
                 logger.warning(f"Zep客户端初始化失败: {e}")
     
@@ -372,57 +376,35 @@ class OasisProfileGenerator:
             logger.debug(f"跳过Zep检索：未设置graph_id")
             return results
         
-        comprehensive_query = t('progress.zepSearchQuery', name=entity_name)
+        comprehensive_query = normalize_zep_search_query(
+            t('progress.zepSearchQuery', name=entity_name)
+        )
         
         def search_edges():
             """搜索边（事实/关系）- 带重试机制"""
-            max_retries = 3
-            last_exception = None
-            delay = 2.0
-            
-            for attempt in range(max_retries):
-                try:
-                    return self.zep_client.graph.search(
+            return call_zep_read_with_retry(
+                lambda: self.zep_client.graph.search(
                         query=comprehensive_query,
                         graph_id=self.graph_id,
                         limit=30,
                         scope="edges",
                         reranker="rrf"
-                    )
-                except Exception as e:
-                    last_exception = e
-                    if attempt < max_retries - 1:
-                        logger.debug(f"Zep边搜索第 {attempt + 1} 次失败: {str(e)[:80]}, 重试中...")
-                        time.sleep(delay)
-                        delay *= 2
-                    else:
-                        logger.debug(f"Zep边搜索在 {max_retries} 次尝试后仍失败: {e}")
-            return None
+                ),
+                operation_name=f"profile edge search ({entity.uuid})",
+            )
         
         def search_nodes():
             """搜索节点（实体摘要）- 带重试机制"""
-            max_retries = 3
-            last_exception = None
-            delay = 2.0
-            
-            for attempt in range(max_retries):
-                try:
-                    return self.zep_client.graph.search(
+            return call_zep_read_with_retry(
+                lambda: self.zep_client.graph.search(
                         query=comprehensive_query,
                         graph_id=self.graph_id,
                         limit=20,
                         scope="nodes",
                         reranker="rrf"
-                    )
-                except Exception as e:
-                    last_exception = e
-                    if attempt < max_retries - 1:
-                        logger.debug(f"Zep节点搜索第 {attempt + 1} 次失败: {str(e)[:80]}, 重试中...")
-                        time.sleep(delay)
-                        delay *= 2
-                    else:
-                        logger.debug(f"Zep节点搜索在 {max_retries} 次尝试后仍失败: {e}")
-            return None
+                ),
+                operation_name=f"profile node search ({entity.uuid})",
+            )
         
         try:
             # 并行执行edges和nodes搜索
@@ -431,8 +413,11 @@ class OasisProfileGenerator:
                 node_future = executor.submit(search_nodes)
                 
                 # 获取结果
-                edge_result = edge_future.result(timeout=30)
-                node_result = node_future.result(timeout=30)
+                # Each request already has the configured HTTP timeout and
+                # typed retry budget. A second hard-coded 30s future timeout
+                # discarded late successes while the executor still waited.
+                edge_result = edge_future.result()
+                node_result = node_future.result()
             
             # 处理边搜索结果
             all_facts = set()
@@ -462,10 +447,10 @@ class OasisProfileGenerator:
             
             logger.info(f"Zep混合检索完成: {entity_name}, 获取 {len(results['facts'])} 条事实, {len(results['node_summaries'])} 个相关节点")
             
-        except concurrent.futures.TimeoutError:
-            logger.warning(f"Zep检索超时 ({entity_name})")
         except Exception as e:
             logger.warning(f"Zep检索失败 ({entity_name}): {e}")
+            if not is_retryable_zep_error(e):
+                raise
         
         return results
     

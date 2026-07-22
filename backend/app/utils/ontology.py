@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional
 
 MAX_ONTOLOGY_TYPES = 10
 MAX_ONTOLOGY_ATTRIBUTES = 10
+MAX_ONTOLOGY_SOURCE_TARGETS = 10
 RESERVED_ONTOLOGY_ATTRIBUTE_NAMES = frozenset({
     "uuid",
     "name",
@@ -67,3 +68,36 @@ def normalize_ontology_attributes(attributes: Any) -> List[Dict[str, Any]]:
         normalized_attributes.append(dict(_FALLBACK_ATTRIBUTE))
 
     return normalized_attributes
+
+
+def normalize_ontology_source_targets(
+    source_targets: Any,
+    *,
+    limit: int | None = MAX_ONTOLOGY_SOURCE_TARGETS,
+) -> List[Dict[str, str]]:
+    """Return unique, structurally valid source-target pairs within Zep limits."""
+
+    if not isinstance(source_targets, list):
+        return []
+
+    normalized_targets: List[Dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for source_target in source_targets:
+        if not isinstance(source_target, dict):
+            continue
+        source = source_target.get("source")
+        target = source_target.get("target")
+        if not isinstance(source, str) or not source.strip():
+            continue
+        if not isinstance(target, str) or not target.strip():
+            continue
+
+        pair = (source.strip(), target.strip())
+        if pair in seen:
+            continue
+        seen.add(pair)
+        normalized_targets.append({"source": pair[0], "target": pair[1]})
+        if limit is not None and len(normalized_targets) == limit:
+            break
+
+    return normalized_targets

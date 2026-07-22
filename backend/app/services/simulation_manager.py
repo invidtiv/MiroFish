@@ -28,6 +28,7 @@ class SimulationStatus(str, Enum):
     PREPARING = "preparing"
     READY = "ready"
     RUNNING = "running"
+    STOPPING = "stopping"
     PAUSED = "paused"
     STOPPED = "stopped"      # 模拟被手动停止
     COMPLETED = "completed"  # 模拟自然完成

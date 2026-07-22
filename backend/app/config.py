@@ -14,6 +14,29 @@ else:
     load_dotenv(override=True)
 
 
+def _parse_number(name, raw_value, *, default, cast):
+    """Parse a numeric setting without making module import fail."""
+
+    try:
+        return cast(raw_value), None
+    except (TypeError, ValueError):
+        return default, f"{name} must be a number"
+
+
+_zep_request_timeout, _zep_request_timeout_error = _parse_number(
+    "ZEP_REQUEST_TIMEOUT_SECONDS",
+    os.environ.get("ZEP_REQUEST_TIMEOUT_SECONDS", "30"),
+    default=30.0,
+    cast=float,
+)
+_zep_ingestion_timeout, _zep_ingestion_timeout_error = _parse_number(
+    "ZEP_INGESTION_TIMEOUT_SECONDS",
+    os.environ.get("ZEP_INGESTION_TIMEOUT_SECONDS", "600"),
+    default=600,
+    cast=int,
+)
+
+
 class Config:
     """Flask配置类"""
     
@@ -31,6 +54,13 @@ class Config:
     
     # Zep配置
     ZEP_API_KEY = os.environ.get('ZEP_API_KEY')
+    ZEP_REQUEST_TIMEOUT_SECONDS = _zep_request_timeout
+    ZEP_INGESTION_TIMEOUT_SECONDS = _zep_ingestion_timeout
+    _ZEP_CONFIG_PARSE_ERRORS = tuple(
+        error
+        for error in (_zep_request_timeout_error, _zep_ingestion_timeout_error)
+        if error
+    )
     
     # 文件上传配置
     MAX_CONTENT_LENGTH = 50 * 1024 * 1024  # 50MB
@@ -68,6 +98,13 @@ class Config:
             errors.append("LLM_API_KEY 未配置")
         if not cls.ZEP_API_KEY:
             errors.append("ZEP_API_KEY 未配置")
+        if os.environ.get("ZEP_API_URL"):
+            errors.append("ZEP_API_URL 不受支持；MiroFish 仅连接 Zep Cloud")
+        errors.extend(cls._ZEP_CONFIG_PARSE_ERRORS)
+        if cls.ZEP_REQUEST_TIMEOUT_SECONDS <= 0:
+            errors.append("ZEP_REQUEST_TIMEOUT_SECONDS 必须大于 0")
+        if cls.ZEP_INGESTION_TIMEOUT_SECONDS <= 0:
+            errors.append("ZEP_INGESTION_TIMEOUT_SECONDS 必须大于 0")
         if cls.DEBUG:
             import warnings
             warnings.warn("Flask DEBUG mode is enabled. Do not use in production.", RuntimeWarning)

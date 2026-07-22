@@ -13,6 +13,7 @@ from ..utils.file_parser import split_text_into_chunks
 from ..utils.ontology import (
     MAX_ONTOLOGY_TYPES,
     normalize_ontology_attributes,
+    normalize_ontology_source_targets,
 )
 
 logger = logging.getLogger(__name__)
@@ -29,6 +30,18 @@ def _to_pascal_case(name: str) -> str:
     # 每个词首字母大写，过滤空串
     result = ''.join(word.capitalize() for word in words if word)
     return result if result else 'Unknown'
+
+
+def _to_upper_snake_case(name: str) -> str:
+    """Convert free-form or camelCase names to SCREAMING_SNAKE_CASE."""
+
+    separated = re.sub(r'([a-z0-9])([A-Z])', r'\1_\2', name.strip())
+    normalized = re.sub(r'[^a-zA-Z0-9]+', '_', separated).strip('_').upper()
+    if not normalized:
+        return "UNKNOWN"
+    if normalized[0].isdigit():
+        normalized = f"REL_{normalized}"
+    return normalized
 
 
 # 本体生成的系统提示词
@@ -414,76 +427,71 @@ class OntologyGenerator:
     
     def _validate_and_process(self, result: Dict[str, Any]) -> Dict[str, Any]:
         """验证和后处理结果"""
-        
-        # 确保必要字段存在
-        if "entity_types" not in result:
-            result["entity_types"] = []
-        if "edge_types" not in result:
-            result["edge_types"] = []
-        if "analysis_summary" not in result:
+        if not isinstance(result, dict):
+            raise ValueError("Ontology result must be an object")
+
+        raw_entities = result.get("entity_types")
+        raw_edges = result.get("edge_types")
+        if not isinstance(raw_entities, list):
+            raw_entities = []
+        if not isinstance(raw_edges, list):
+            raw_edges = []
+        if not isinstance(result.get("analysis_summary"), str):
             result["analysis_summary"] = ""
-        
-        # 验证实体类型
-        # 记录原始名称到 PascalCase 的映射，用于后续修正 edge 的 source_targets 引用
-        entity_name_map = {}
-        for entity in result["entity_types"]:
-            # 强制将 entity name 转为 PascalCase（Zep API 要求）
-            if "name" in entity:
-                original_name = entity["name"]
-                entity["name"] = _to_pascal_case(original_name)
-                if entity["name"] != original_name:
-                    logger.warning(f"Entity type name '{original_name}' auto-converted to '{entity['name']}'")
-                entity_name_map[original_name] = entity["name"]
-            # Normalize LLM output, enforce Zep field limits, and guarantee at
-            # least one property for every custom ontology type.
+
+        # Normalize entity entries before touching their fields. LLMs
+        # occasionally emit a bare string, null, or another scalar.
+        entity_name_map: Dict[str, str] = {}
+        processed_entities: List[Dict[str, Any]] = []
+        seen_entity_names = set()
+        for raw_entity in raw_entities:
+            if isinstance(raw_entity, str):
+                entity = {"name": raw_entity}
+            elif isinstance(raw_entity, dict):
+                entity = dict(raw_entity)
+            else:
+                logger.warning("Ignoring non-object ontology entity entry")
+                continue
+
+            original_name = entity.get("name")
+            if not isinstance(original_name, str) or not original_name.strip():
+                logger.warning("Ignoring ontology entity without a usable name")
+                continue
+            original_name = original_name.strip()
+            normalized_name = _to_pascal_case(original_name)
+            if normalized_name == "Unknown":
+                continue
+            if normalized_name in seen_entity_names:
+                logger.warning(f"Duplicate entity type '{normalized_name}' removed during validation")
+                entity_name_map[original_name] = normalized_name
+                entity_name_map[original_name.lower()] = normalized_name
+                continue
+
+            if normalized_name != original_name:
+                logger.warning(
+                    f"Entity type name '{original_name}' auto-converted to '{normalized_name}'"
+                )
+            entity["name"] = normalized_name
             entity["attributes"] = normalize_ontology_attributes(
                 entity.get("attributes", [])
             )
-            if "examples" not in entity:
+            if not isinstance(entity.get("examples"), list):
                 entity["examples"] = []
-            # 确保description不超过100字符
-            if len(entity.get("description", "")) > 100:
-                entity["description"] = entity["description"][:97] + "..."
-        
-        # 验证关系类型
-        for edge in result["edge_types"]:
-            # 强制将 edge name 转为 SCREAMING_SNAKE_CASE（Zep API 要求）
-            if "name" in edge:
-                original_name = edge["name"]
-                edge["name"] = original_name.upper()
-                if edge["name"] != original_name:
-                    logger.warning(f"Edge type name '{original_name}' auto-converted to '{edge['name']}'")
-            # 修正 source_targets 中的实体名称引用，与转换后的 PascalCase 保持一致
-            for st in edge.get("source_targets", []):
-                if st.get("source") in entity_name_map:
-                    st["source"] = entity_name_map[st["source"]]
-                if st.get("target") in entity_name_map:
-                    st["target"] = entity_name_map[st["target"]]
-            if "source_targets" not in edge:
-                edge["source_targets"] = []
-            # Normalize LLM output, enforce Zep field limits, and guarantee at
-            # least one property for every custom ontology type.
-            edge["attributes"] = normalize_ontology_attributes(
-                edge.get("attributes", [])
+            description = entity.get("description")
+            if not isinstance(description, str) or not description:
+                description = f"A {normalized_name} entity."
+            entity["description"] = (
+                description[:97] + "..." if len(description) > 100 else description
             )
-            if len(edge.get("description", "")) > 100:
-                edge["description"] = edge["description"][:97] + "..."
-        
-        # Zep API 限制：最多 10 个自定义实体类型，最多 10 个自定义边类型
-        MAX_ENTITY_TYPES = MAX_ONTOLOGY_TYPES
-        MAX_EDGE_TYPES = MAX_ONTOLOGY_TYPES
 
-        # 去重：按 name 去重，保留首次出现的
-        seen_names = set()
-        deduped = []
-        for entity in result["entity_types"]:
-            name = entity.get("name", "")
-            if name and name not in seen_names:
-                seen_names.add(name)
-                deduped.append(entity)
-            elif name in seen_names:
-                logger.warning(f"Duplicate entity type '{name}' removed during validation")
-        result["entity_types"] = deduped
+            seen_entity_names.add(normalized_name)
+            processed_entities.append(entity)
+            entity_name_map[original_name] = normalized_name
+            entity_name_map[original_name.lower()] = normalized_name
+            entity_name_map[normalized_name] = normalized_name
+            entity_name_map[normalized_name.lower()] = normalized_name
+
+        result["entity_types"] = processed_entities
 
         # 兜底类型定义
         person_fallback = {
@@ -523,9 +531,9 @@ class OntologyGenerator:
             needed_slots = len(fallbacks_to_add)
             
             # 如果添加后会超过 10 个，需要移除一些现有类型
-            if current_count + needed_slots > MAX_ENTITY_TYPES:
+            if current_count + needed_slots > MAX_ONTOLOGY_TYPES:
                 # 计算需要移除多少个
-                to_remove = current_count + needed_slots - MAX_ENTITY_TYPES
+                to_remove = current_count + needed_slots - MAX_ONTOLOGY_TYPES
                 # 从末尾移除（保留前面更重要的具体类型）
                 result["entity_types"] = result["entity_types"][:-to_remove]
             
@@ -533,11 +541,82 @@ class OntologyGenerator:
             result["entity_types"].extend(fallbacks_to_add)
         
         # 最终确保不超过限制（防御性编程）
-        if len(result["entity_types"]) > MAX_ENTITY_TYPES:
-            result["entity_types"] = result["entity_types"][:MAX_ENTITY_TYPES]
-        
-        if len(result["edge_types"]) > MAX_EDGE_TYPES:
-            result["edge_types"] = result["edge_types"][:MAX_EDGE_TYPES]
+        result["entity_types"] = result["entity_types"][:MAX_ONTOLOGY_TYPES]
+
+        # Resolve edge endpoints only after entity fallback/capping, so an edge
+        # cannot refer to a type that was removed to satisfy Zep's limits.
+        valid_entity_names = {entity["name"] for entity in result["entity_types"]}
+        for name in valid_entity_names:
+            entity_name_map[name] = name
+            entity_name_map[name.lower()] = name
+
+        def resolve_entity_name(value: str) -> Optional[str]:
+            stripped = value.strip()
+            if stripped == "Entity":
+                return stripped
+            mapped = entity_name_map.get(stripped) or entity_name_map.get(stripped.lower())
+            if mapped in valid_entity_names:
+                return mapped
+            pascal_name = _to_pascal_case(stripped)
+            return pascal_name if pascal_name in valid_entity_names else None
+
+        processed_edges: List[Dict[str, Any]] = []
+        seen_edge_names = set()
+        for raw_edge in raw_edges:
+            if isinstance(raw_edge, str):
+                # A bare edge name has no endpoints and cannot be installed in
+                # Zep safely. Ignore it instead of inventing a relationship.
+                logger.warning(f"Ignoring ontology edge without source_targets: {raw_edge}")
+                continue
+            elif isinstance(raw_edge, dict):
+                edge = dict(raw_edge)
+            else:
+                logger.warning("Ignoring non-object ontology edge entry")
+                continue
+
+            original_name = edge.get("name")
+            if not isinstance(original_name, str) or not original_name.strip():
+                logger.warning("Ignoring ontology edge without a usable name")
+                continue
+            normalized_name = _to_upper_snake_case(original_name)
+            if normalized_name == "UNKNOWN" or normalized_name in seen_edge_names:
+                if normalized_name in seen_edge_names:
+                    logger.warning(f"Duplicate edge type '{normalized_name}' removed during validation")
+                continue
+            if normalized_name != original_name:
+                logger.warning(
+                    f"Edge type name '{original_name}' auto-converted to '{normalized_name}'"
+                )
+            edge["name"] = normalized_name
+
+            normalized_targets = []
+            for source_target in normalize_ontology_source_targets(
+                edge.get("source_targets", []),
+                limit=None,
+            ):
+                source = resolve_entity_name(source_target["source"])
+                target = resolve_entity_name(source_target["target"])
+                if source and target:
+                    normalized_targets.append({"source": source, "target": target})
+            edge["source_targets"] = normalize_ontology_source_targets(
+                normalized_targets
+            )
+            edge["attributes"] = normalize_ontology_attributes(
+                edge.get("attributes", [])
+            )
+            description = edge.get("description")
+            if not isinstance(description, str) or not description:
+                description = f"A {normalized_name} relationship."
+            edge["description"] = (
+                description[:97] + "..." if len(description) > 100 else description
+            )
+
+            seen_edge_names.add(normalized_name)
+            processed_edges.append(edge)
+            if len(processed_edges) == MAX_ONTOLOGY_TYPES:
+                break
+
+        result["edge_types"] = processed_edges
         
         return result
     

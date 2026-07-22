@@ -52,18 +52,4 @@ service.interceptors.response.use(
   }
 )
 
-// 带重试的请求函数
-export const requestWithRetry = async (requestFn, maxRetries = 3, delay = 1000) => {
-  for (let i = 0; i < maxRetries; i++) {
-    try {
-      return await requestFn()
-    } catch (error) {
-      if (i === maxRetries - 1) throw error
-      
-      console.warn(`Request failed, retrying (${i + 1}/${maxRetries})...`)
-      await new Promise(resolve => setTimeout(resolve, delay * Math.pow(2, i)))
-    }
-  }
-}
-
 export default service
