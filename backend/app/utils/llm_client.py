@@ -9,6 +9,7 @@ from typing import Optional, Dict, Any, List
 from openai import OpenAI
 
 from ..config import Config
+from .openai_chat_compat import create_chat_completion, extract_chat_completion_text
 
 
 class LLMClient:
@@ -51,18 +52,15 @@ class LLMClient:
         Returns:
             模型响应文本
         """
-        kwargs = {
-            "model": self.model,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-        }
-        
-        if response_format:
-            kwargs["response_format"] = response_format
-        
-        response = self.client.chat.completions.create(**kwargs)
-        content = response.choices[0].message.content
+        response = create_chat_completion(
+            self.client,
+            model=self.model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            response_format=response_format,
+        )
+        content = extract_chat_completion_text(response)
         # 部分模型（如MiniMax M2.5）会在content中包含<think>思考内容，需要移除
         content = re.sub(r'<think>[\s\S]*?</think>', '', content).strip()
         return content

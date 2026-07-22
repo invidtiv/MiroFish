@@ -21,6 +21,7 @@ from zep_cloud.client import Zep
 from ..config import Config
 from ..utils.logger import get_logger
 from ..utils.locale import get_language_instruction, get_locale, set_locale, t
+from ..utils.openai_chat_compat import create_chat_completion, extract_chat_completion_text
 from .zep_entity_reader import EntityNode, ZepEntityReader
 
 logger = get_logger('mirofish.oasis_profile')
@@ -527,18 +528,19 @@ class OasisProfileGenerator:
         
         for attempt in range(max_attempts):
             try:
-                response = self.client.chat.completions.create(
+                response = create_chat_completion(
+                    self.client,
                     model=self.model_name,
                     messages=[
                         {"role": "system", "content": self._get_system_prompt(is_individual)},
                         {"role": "user", "content": prompt}
                     ],
                     response_format={"type": "json_object"},
-                    temperature=0.7 - (attempt * 0.1)  # 每次重试降低温度
+                    temperature=0.7 - (attempt * 0.1),  # 每次重试降低温度
                     # 不设置max_tokens，让LLM自由发挥
                 )
                 
-                content = response.choices[0].message.content
+                content = extract_chat_completion_text(response)
                 
                 # 检查是否被截断（finish_reason不是'stop'）
                 finish_reason = response.choices[0].finish_reason
