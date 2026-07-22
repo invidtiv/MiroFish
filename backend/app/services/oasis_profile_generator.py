@@ -27,6 +27,51 @@ from .zep_entity_reader import EntityNode, ZepEntityReader
 logger = get_logger('mirofish.oasis_profile')
 
 
+def _coerce_to_str(value: Any) -> str:
+    """Coerce a value to a plain string.
+
+    Handles dict, list, and other non-string types that may be returned
+    by LLM JSON parsing.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        for key in ('text', 'value', 'description', 'content', 'summary', 'name'):
+            if key in value:
+                candidate = _coerce_to_str(value[key])
+                if candidate:
+                    return candidate
+        return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, (list, tuple)):
+        str_items = [_coerce_to_str(item) for item in value]
+        str_items = [item for item in str_items if item]
+        return ', '.join(str_items)
+    return str(value)
+
+
+def _coerce_to_str_list(value: Any) -> List[str]:
+    """Coerce a value to a list of strings.
+
+    Handles nested structures that may be returned by LLM JSON parsing.
+    """
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        result: List[str] = []
+        for item in value:
+            if isinstance(item, (list, tuple)):
+                result.extend(_coerce_to_str_list(item))
+            else:
+                text = _coerce_to_str(item)
+                if text:
+                    result.append(text)
+        return result
+    text = _coerce_to_str(value)
+    return [text] if text else []
+
+
 @dataclass
 class OasisAgentProfile:
     """OASIS Agent Profile数据结构"""
@@ -36,7 +81,7 @@ class OasisAgentProfile:
     name: str
     bio: str
     persona: str
-    
+
     # 可选字段 - Reddit风格
     karma: int = 1000
     
@@ -59,6 +104,18 @@ class OasisAgentProfile:
     
     created_at: str = field(default_factory=lambda: datetime.now().strftime("%Y-%m-%d"))
     
+    def __post_init__(self):
+        """Normalize structured LLM fields once at the profile boundary."""
+        self.bio = _coerce_to_str(self.bio) or self.name
+        self.persona = _coerce_to_str(self.persona) or (
+            f"{self.name} is a participant in social discussions."
+        )
+        self.country = _coerce_to_str(self.country) or None
+        self.profession = _coerce_to_str(self.profession) or None
+        self.gender = _coerce_to_str(self.gender) or None
+        self.mbti = _coerce_to_str(self.mbti) or None
+        self.interested_topics = _coerce_to_str_list(self.interested_topics)
+
     def to_reddit_format(self) -> Dict[str, Any]:
         """转换为Reddit平台格式"""
         profile = {
@@ -1170,8 +1227,8 @@ class OasisProfileGenerator:
                 "user_id": profile.user_id if profile.user_id is not None else idx,  # 关键：必须包含 user_id
                 "username": profile.user_name,
                 "name": profile.name,
-                "bio": profile.bio[:150] if profile.bio else f"{profile.name}",
-                "persona": profile.persona or f"{profile.name} is a participant in social discussions.",
+                "bio": profile.bio[:150],
+                "persona": profile.persona,
                 "karma": profile.karma if profile.karma else 1000,
                 "created_at": profile.created_at,
                 # OASIS必需字段 - 确保都有默认值
@@ -1204,4 +1261,3 @@ class OasisProfileGenerator:
         """[已废弃] 请使用 save_profiles() 方法"""
         logger.warning("save_profiles_to_json已废弃，请使用save_profiles方法")
         self.save_profiles(profiles, file_path, platform)
-
